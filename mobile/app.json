@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "Baby Tracker",
+    "slug": "baby-tracker-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#fff5f7"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.babytracker.mobile"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#fff5f7"
+      },
+      "package": "com.babytracker.mobile"
+    },
+    "plugins": [
+      "@react-native-community/datetimepicker"
+    ]
+  }
+}

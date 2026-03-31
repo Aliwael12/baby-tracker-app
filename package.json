@@ -1,0 +1,13 @@
+{
+  "name": "baby-tracker-app",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "api",
+    "mobile"
+  ],
+  "scripts": {
+    "api": "npm run dev --workspace=api",
+    "mobile": "npm run start --workspace=mobile"
+  }
+}
