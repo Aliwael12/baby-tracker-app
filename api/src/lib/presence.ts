@@ -27,6 +27,34 @@ export function activeSince(now = new Date()): Date {
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 
 /**
+ * When this container last actually wrote a heartbeat for a given account.
+ *
+ * The staleness test already rides in the UPDATE's WHERE clause, so a recently
+ * seen account has always cost zero writes — but it still cost a *connection*,
+ * on every authenticated request, to run a statement that matched no rows.
+ * That is not free anywhere and it is expensive on a pooled database: the
+ * heartbeat was competing for the same small pool as the queries a parent is
+ * actually waiting on, and turned each screen load into half again as many
+ * connection acquisitions as it had requests.
+ *
+ * Remembering the answer in the container skips the round trip entirely. It is
+ * per-container rather than shared, so N warm containers write at most N
+ * heartbeats per interval instead of one — which is still a rounding error
+ * against one per request, and the column feeds a 36-hour window (see
+ * ACTIVE_WINDOW_HOURS) that could not care less.
+ */
+const lastTouched = new Map<number, number>();
+
+/**
+ * A ceiling on that map, because it is keyed by account id and a long-lived
+ * container would otherwise hold one entry per account that has ever used it.
+ * Cleared wholesale rather than evicted one at a time: losing the memo costs
+ * one redundant UPDATE per account, so there is nothing here worth the code to
+ * keep an LRU honest.
+ */
+const MAX_REMEMBERED = 5_000;
+
+/**
  * Stamp that this account was just seen.
  *
  * Deliberately not awaited by callers: this is telemetry sitting in front of
@@ -49,20 +77,33 @@ export function touchAccount(accountId: number): void {
   // cheap to defend at the door.
   if (!Number.isInteger(accountId) || accountId <= 0) return;
 
-  const now = new Date();
+  const now = Date.now();
+  const seen = lastTouched.get(accountId);
+  if (seen !== undefined && now - seen < HEARTBEAT_INTERVAL_MS) return;
+
+  if (lastTouched.size >= MAX_REMEMBERED) lastTouched.clear();
+  // Recorded before the write rather than after it, so a burst of concurrent
+  // requests sends one heartbeat between them instead of each seeing an
+  // un-updated map and sending its own. A write that then fails simply waits
+  // for the next interval — see the catch below for why that is fine.
+  lastTouched.set(accountId, now);
+
+  const stampedAt = new Date(now);
   prisma.account
     .updateMany({
       where: {
         id: accountId,
         OR: [
           { lastSeenAt: null },
-          { lastSeenAt: { lt: new Date(now.getTime() - HEARTBEAT_INTERVAL_MS) } },
+          { lastSeenAt: { lt: new Date(now - HEARTBEAT_INTERVAL_MS) } },
         ],
       },
-      data: { lastSeenAt: now },
+      data: { lastSeenAt: stampedAt },
     })
     .catch(() => {
       // A missed heartbeat is not worth failing, or even logging, a request the
-      // parent is waiting on.
+      // parent is waiting on. Notably this now also swallows a pool that was
+      // full — which is the point: the heartbeat must never be the thing that
+      // takes the last connection, nor the thing that complains about it.
     });
 }

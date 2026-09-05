@@ -5,6 +5,7 @@ import {
   type TimerType,
 } from "../api/activeTimers";
 import { usePolling } from "./usePolling";
+import { getErrorMessage } from "../lib/errors";
 
 /**
  * Slow enough to be cheap, fast enough that a caregiver reaching for "Start
@@ -25,6 +26,16 @@ export interface UseActiveTimersResult {
    * is gone", and a response can only vouch for the moment it was asked.
    */
   syncedAt: number | null;
+  /**
+   * Why the last fetch failed, or null if it didn't.
+   *
+   * `activeByType` intentionally holds its last good value through a failure
+   * rather than flashing every card back to idle. That is the right display,
+   * but on its own it is also a silent lie: a stale "nobody is feeding" looks
+   * exactly like a fresh one, and a caregiver acts on it. Surfacing the reason
+   * lets the screen say the view is stale instead of pretending it isn't.
+   */
+  error: string | null;
   refresh: () => Promise<void>;
 }
 
@@ -41,6 +52,7 @@ export function useActiveTimers(
     Partial<Record<TimerType, ActiveTimerRecord>>
   >({});
   const [syncedAt, setSyncedAt] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
   /**
    * Monotonic id per fetch, so only the latest-initiated request may write
    * state. Without it, the 20s poll and the refetch after finishing a
@@ -57,6 +69,7 @@ export function useActiveTimers(
     if (babyId == null) {
       setActiveByType({});
       setSyncedAt(null);
+      setError(null);
       return;
     }
     try {
@@ -66,9 +79,11 @@ export function useActiveTimers(
       for (const timer of timers) byType[timer.type] = timer;
       setActiveByType(byType);
       setSyncedAt(requestedAt);
-    } catch {
+      setError(null);
+    } catch (err) {
       // Stays as whatever it last showed rather than flashing every card back
-      // to idle on a dropped request.
+      // to idle on a dropped request — but says so, via `error`.
+      if (seq === fetchSeqRef.current) setError(getErrorMessage(err));
     }
   }, [babyId]);
 
@@ -78,10 +93,11 @@ export function useActiveTimers(
     fetchSeqRef.current += 1;
     setActiveByType({});
     setSyncedAt(null);
+    setError(null);
     refresh();
   }, [refresh]);
 
   usePolling(refresh, POLL_INTERVAL_MS);
 
-  return { activeByType, syncedAt, refresh };
+  return { activeByType, syncedAt, error, refresh };
 }

@@ -361,6 +361,11 @@ export default function TrackRow({
         comments: type === "pump" || isBottleFeed ? null : note.trim() || null,
         enteredByName,
         pauseTimeline: timeline.length > 0 ? timeline : null,
+        // Ends the server-side lock in the same transaction that writes the
+        // entry, so the two can no longer disagree. releaseLock() below is now
+        // a backstop for older servers and for a lock this row holds without
+        // having saved anything (see cancelAll).
+        releaseTimer: !!GERUND[type],
       });
       // Best-effort, and deliberately after the entry itself: the change is
       // already recorded either way, so a failed stock update must not read

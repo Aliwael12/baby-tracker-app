@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { fetchLogs, deleteLog, LogEntry } from "../api/logs";
+import { getErrorMessage } from "../lib/errors";
 import { useBaby } from "../context/BabyContext";
 
 export interface UseLogsOptions {
@@ -28,6 +29,17 @@ export interface UseLogsResult {
   loadingMore: boolean;
   /** False once a short page comes back — there is nothing after it. */
   hasMore: boolean;
+  /**
+   * Why the last refresh failed, or null if it didn't.
+   *
+   * The rows themselves deliberately survive a failure — blanking a screen a
+   * parent is reading because one poll didn't land would be worse than showing
+   * it a moment stale. But "kept the old rows" and "these are the current rows"
+   * are not the same claim, and for a long time this hook made both of them
+   * identically, by swallowing the error and returning the stale array with no
+   * way to tell. That is what made an outage read as the app merely being slow.
+   */
+  error: string | null;
 }
 
 export function useLogs(
@@ -51,6 +63,7 @@ export function useLogs(
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const pageSize = typeof limit === "number" ? limit : 0;
 
@@ -68,6 +81,7 @@ export function useLogs(
     if (!babyId) {
       setLogs([]);
       setHasMore(false);
+      setError(null);
       setLoading(false);
       return;
     }
@@ -76,8 +90,10 @@ export function useLogs(
       if (request !== requestRef.current) return;
       setLogs(data);
       setHasMore(paginate && pageSize > 0 && data.length === pageSize);
-    } catch {
-      // ignore
+      setError(null);
+    } catch (err) {
+      // Whatever is on screen stays there — see `error` on the result type.
+      if (request === requestRef.current) setError(getErrorMessage(err));
     } finally {
       if (request === requestRef.current) setLoading(false);
     }
@@ -129,5 +145,5 @@ export function useLogs(
     [refresh]
   );
 
-  return { logs, loading, refresh, handleDelete, loadMore, loadingMore, hasMore };
+  return { logs, loading, refresh, handleDelete, loadMore, loadingMore, hasMore, error };
 }

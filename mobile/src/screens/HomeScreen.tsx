@@ -76,7 +76,7 @@ function latestOfType(logs: LogEntry[], type: string): LogEntry | null {
 export default function HomeScreen() {
   const { account } = useAuth();
   const { activeBaby } = useBaby();
-  const { logs, loading, refresh } = useLogs(HOME_FETCH_LIMIT);
+  const { logs, loading, refresh, error: logsError } = useLogs(HOME_FETCH_LIMIT);
   const [showManual, setShowManual] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [habitsRefreshKey, setHabitsRefreshKey] = useState(0);
@@ -98,6 +98,7 @@ export default function HomeScreen() {
   const {
     activeByType,
     syncedAt: activeTimersSyncedAt,
+    error: activeTimersError,
     refresh: refreshActiveTimers,
   } = useActiveTimers(activeBaby?.id);
 
@@ -353,6 +354,34 @@ export default function HomeScreen() {
       </LinearGradient>
 
       <View style={styles.body}>
+      {/*
+        * Everything below is still the last data that arrived — which is the
+        * right thing to show, and the wrong thing to show silently. Both hooks
+        * hold their rows through a failed fetch rather than blanking a screen
+        * someone is reading, so without this line a server that is refusing
+        * requests is indistinguishable from one that simply has nothing new,
+        * and the only feedback is that the app feels slow.
+        *
+        * Deliberately a line, not a dialog: nothing here is broken from the
+        * parent's point of view, and the timers, the tallies and the last-fed
+        * time are all still usable. It says what it knows and offers the one
+        * action that helps.
+        */}
+      {!loading && (logsError || activeTimersError) && (
+        <Pressable
+          onPress={onRefresh}
+          accessibilityRole="button"
+          accessibilityLabel="Couldn't refresh. Tap to try again."
+          style={[styles.staleNotice, { backgroundColor: t.surface, borderColor: t.danger }]}
+        >
+          <Text variant="footnote" tone="danger" style={styles.staleNoticeText}>
+            {logsError ?? activeTimersError}
+          </Text>
+          <Text variant="subheadStrong" tone="accent">
+            Retry
+          </Text>
+        </Pressable>
+      )}
       <View style={styles.section}>
         <SectionHeader
           title="Track"
@@ -495,6 +524,20 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   section: { gap: space.sm },
+  staleNotice: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: space.sm,
+    paddingVertical: space.sm,
+    paddingHorizontal: space.md,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    marginBottom: space.sm,
+  },
+  // Takes the free space so a long message wraps instead of squeezing Retry
+  // off the end of the row.
+  staleNoticeText: { flex: 1 },
   center: { alignItems: "center" },
   trackList: { gap: space.sm },
   // Full-width pink header at the top of the scroll; the bottom corners

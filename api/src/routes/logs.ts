@@ -93,6 +93,16 @@ const createLogSchema = z
     comments: z.string().nullable().optional(),
     enteredByName: z.string().min(1),
     pauseTimeline: z.array(timelineEventSchema).nullable().optional(),
+    /**
+     * Set by a client finishing a timed session it holds the lock for, so the
+     * entry and the release of that lock land as one write.
+     *
+     * Opt-in rather than inferred from the type, because "a feed was saved"
+     * and "the running feed ended" are genuinely different events: adding a
+     * past feed by hand while a live one is running must not stop the live
+     * one. Only the screen that owns the timer knows which it is doing.
+     */
+    releaseTimer: z.boolean().optional(),
   })
   .superRefine((data, ctx) => {
     // A feed or pump is either a nursing/pumping session (has a side) or a
@@ -293,6 +303,7 @@ router.post("/", authMiddleware, async (req, res: Response): Promise<void> => {
     comments,
     enteredByName,
     pauseTimeline,
+    releaseTimer,
   } = parseOrThrow(createLogSchema, req.body);
 
   await requireBabyAccess(accountId, babyId);
@@ -331,40 +342,69 @@ router.post("/", authMiddleware, async (req, res: Response): Promise<void> => {
 
   const isFeedOrPump = type === "feed" || type === "pump";
 
-  const log = await prisma.activityLog.create({
-    data: {
-      accountId,
-      babyId,
-      type,
-      side: side ?? null,
-      // Only a two-sided feed or pump has a split to record. Kept null
-      // rather than zeroed elsewhere, so "no split" stays distinguishable
-      // from "no time on that side".
-      leftMinutes: isFeedOrPump ? leftMinutes ?? null : null,
-      rightMinutes: isFeedOrPump ? rightMinutes ?? null : null,
-      amountMl: isFeedOrPump ? amountMl ?? null : null,
-      diaperStatus: type === "diaper" ? diaperStatus ?? null : null,
-      diaperStockUsed: type === "diaper" ? !!diaperStockUsed : false,
-      // Only a sleep has one; storing it on anything else would put a field in
-      // the data that nothing reads and every future query has to wonder about.
-      sleepKind: type === "sleep" ? sleepKind ?? null : null,
-      weightKg: type === "growth" ? weightKg ?? null : null,
-      heightCm: type === "growth" ? heightCm ?? null : null,
-      headCircumferenceCm: type === "growth" ? headCircumferenceCm ?? null : null,
-      healthCondition: type === "health" ? healthCondition ?? null : null,
-      medication: type === "health" ? medication?.trim() || null : null,
-      dose: type === "health" ? dose?.trim() || null : null,
-      feverCelsius:
-        type === "health" && healthCondition === "fever" ? feverCelsius ?? null : null,
-      startTime: start,
-      endTime: end,
-      durationMinutes,
-      comments: comments ?? null,
-      enteredByName,
-      pauseTimelineJson,
-    },
-    select: LOG_SELECT,
-  });
+  const logData = {
+    accountId,
+    babyId,
+    type,
+    side: side ?? null,
+    // Only a two-sided feed or pump has a split to record. Kept null
+    // rather than zeroed elsewhere, so "no split" stays distinguishable
+    // from "no time on that side".
+    leftMinutes: isFeedOrPump ? leftMinutes ?? null : null,
+    rightMinutes: isFeedOrPump ? rightMinutes ?? null : null,
+    amountMl: isFeedOrPump ? amountMl ?? null : null,
+    diaperStatus: type === "diaper" ? diaperStatus ?? null : null,
+    diaperStockUsed: type === "diaper" ? !!diaperStockUsed : false,
+    // Only a sleep has one; storing it on anything else would put a field in
+    // the data that nothing reads and every future query has to wonder about.
+    sleepKind: type === "sleep" ? sleepKind ?? null : null,
+    weightKg: type === "growth" ? weightKg ?? null : null,
+    heightCm: type === "growth" ? heightCm ?? null : null,
+    headCircumferenceCm: type === "growth" ? headCircumferenceCm ?? null : null,
+    healthCondition: type === "health" ? healthCondition ?? null : null,
+    medication: type === "health" ? medication?.trim() || null : null,
+    dose: type === "health" ? dose?.trim() || null : null,
+    feverCelsius:
+      type === "health" && healthCondition === "fever" ? feverCelsius ?? null : null,
+    startTime: start,
+    endTime: end,
+    durationMinutes,
+    comments: comments ?? null,
+    enteredByName,
+    pauseTimelineJson,
+  };
+
+  /**
+   * Save the entry and drop the lock together, when the caller says this is a
+   * timed session ending.
+   *
+   * These used to be two requests from the phone, and the gap between them was
+   * real: an entry that saved while the release didn't left the activity
+   * looking like it was still running for every caregiver, until the lock aged
+   * out a day later — and the phone had already cleared its own timer, so
+   * nothing on that device would ever retry. In one transaction there is no
+   * gap to lose. The client's own DELETE still follows as a backstop; it finds
+   * nothing to do and says so with a 204.
+   *
+   * Scoped to this account's lock (or an unattributed one) for the same reason
+   * the DELETE route is — see the note there. Releasing a lock somebody else
+   * has since claimed would make their session invisible to everyone.
+   */
+  const releasesLock =
+    releaseTimer === true && (type === "feed" || type === "pump" || type === "sleep");
+
+  if (!releasesLock) {
+    const log = await prisma.activityLog.create({ data: logData, select: LOG_SELECT });
+    res.status(201).json(log);
+    return;
+  }
+
+  const [log] = await prisma.$transaction([
+    prisma.activityLog.create({ data: logData, select: LOG_SELECT }),
+    prisma.activeTimer.deleteMany({
+      where: { babyId, type, OR: [{ accountId }, { accountId: null }] },
+    }),
+  ]);
 
   res.status(201).json(log);
 });

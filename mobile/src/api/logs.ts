@@ -89,6 +89,13 @@ export interface CreateLogInput {
   comments?: string | null;
   enteredByName: string;
   pauseTimeline?: TimelineEvent[] | null;
+  /**
+   * Finish the running feed/pump/sleep lock for this baby as part of saving
+   * this entry, instead of in a second request that can be lost on its own.
+   * Only the screen that owns the timer should set it — see the note on the
+   * server's own `releaseTimer`.
+   */
+  releaseTimer?: boolean;
 }
 
 export async function createLog(data: CreateLogInput): Promise<LogEntry> {
